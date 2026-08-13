@@ -1,0 +1,10 @@
+Options -Indexes
+
+<FilesMatch "^(.env|composer.(json|lock))$">
+    Require all denied
+</FilesMatch>
+
+RewriteEngine On
+RewriteRule ^(?:src|database|docs|var|vendor)(?:/|$) - [F,L]
+RewriteCond %{REQUEST_URI} !^/public/
+RewriteRule ^(.*)$ public/$1 [L]
