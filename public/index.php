@@ -9,7 +9,7 @@ use App\Repository\DeviceTypeRepository;
 use App\Repository\LocationRepository;
 use App\Repository\MeasurementRepository;
 
-require dirname(__DIR__) . '/vendor/autoload.php';
+require __DIR__ . '/vendor/autoload.php';
 
 session_set_cookie_params([
     'httponly' => true,
@@ -18,7 +18,7 @@ session_set_cookie_params([
 ]);
 session_start();
 
-$config = Config::fromEnvironment(dirname(__DIR__));
+$config = Config::fromEnvironment(__DIR__);
 $database = Database::connect($config);
 $devices = new DeviceTypeRepository($database);
 $locations = new LocationRepository($database);
