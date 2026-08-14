@@ -24,6 +24,18 @@ final class LocationRepository
     /** @param array<string, mixed> $data */
     public function create(array $data): void
     {
+        $name = trim((string) ($data['name'] ?? ''));
+        if ($name === '') {
+            throw new \InvalidArgumentException('Der Name des Messorts ist erforderlich.');
+        }
+        $latitude = ($data['latitude'] ?? '') !== '' ? (float) $data['latitude'] : null;
+        $longitude = ($data['longitude'] ?? '') !== '' ? (float) $data['longitude'] : null;
+        if ($latitude !== null && ($latitude < -90 || $latitude > 90)) {
+            throw new \InvalidArgumentException('Der Breitengrad ist ungültig.');
+        }
+        if ($longitude !== null && ($longitude < -180 || $longitude > 180)) {
+            throw new \InvalidArgumentException('Der Längengrad ist ungültig.');
+        }
         $allowed = ['indoor', 'outdoor', 'underground', 'mixed', 'unknown'];
         $environment = in_array($data['environment'] ?? '', $allowed, true)
             ? $data['environment']
@@ -35,9 +47,9 @@ final class LocationRepository
              VALUES (:name, :latitude, :longitude, :environment, :notes, NOW(), NOW())'
         );
         $statement->execute([
-            'name' => trim((string) $data['name']),
-            'latitude' => $data['latitude'] !== '' ? (float) $data['latitude'] : null,
-            'longitude' => $data['longitude'] !== '' ? (float) $data['longitude'] : null,
+            'name' => $name,
+            'latitude' => $latitude,
+            'longitude' => $longitude,
             'environment' => $environment,
             'notes' => trim((string) ($data['notes'] ?? '')) ?: null,
         ]);

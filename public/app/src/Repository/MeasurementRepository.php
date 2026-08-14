@@ -34,7 +34,22 @@ final class MeasurementRepository
     public function create(array $data): void
     {
         $source = ($data['source'] ?? '') === 'device' ? 'device' : 'field_tester';
-        $deviceTypeId = $source === 'device' ? (int) $data['device_type_id'] : null;
+        $deviceTypeId = $source === 'device' ? (int) ($data['device_type_id'] ?? 0) : null;
+        if ((int) ($data['location_id'] ?? 0) < 1) {
+            throw new \InvalidArgumentException('Ein Messort ist erforderlich.');
+        }
+        if ($source === 'device' && $deviceTypeId < 1) {
+            throw new \InvalidArgumentException('Für eine Gerätemessung ist ein Gerätetyp erforderlich.');
+        }
+        foreach (['rssi_dbm', 'snr_db', 'tx_power_dbm'] as $numericField) {
+            if (!is_numeric($data[$numericField] ?? null)) {
+                throw new \InvalidArgumentException('RSSI, SNR und TX Power müssen numerisch sein.');
+            }
+        }
+        $measuredAt = \DateTimeImmutable::createFromFormat('Y-m-d\\TH:i', (string) ($data['measured_at'] ?? ''));
+        if (!$measuredAt) {
+            throw new \InvalidArgumentException('Der Messzeitpunkt ist ungültig.');
+        }
 
         $statement = $this->database->prepare(
             'INSERT INTO measurements
@@ -50,7 +65,7 @@ final class MeasurementRepository
             'source' => $source,
             'pair_identifier' => trim((string) ($data['pair_identifier'] ?? '')) ?: null,
             'gateway_identifier' => trim((string) ($data['gateway_identifier'] ?? '')) ?: null,
-            'measured_at' => str_replace('T', ' ', (string) $data['measured_at']) . ':00',
+            'measured_at' => $measuredAt->format('Y-m-d H:i:s'),
             'rssi' => (float) $data['rssi_dbm'],
             'snr' => (float) $data['snr_db'],
             'sf' => max(7, min(12, (int) $data['spreading_factor'])),
