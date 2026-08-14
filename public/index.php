@@ -4,12 +4,17 @@ declare(strict_types=1);
 
 use App\Config;
 use App\Database;
+use App\Auth\Auth;
 use App\Http\Csrf;
 use App\Calibration\CalibrationService;
+use App\Evaluation\EvaluationService;
+use App\Evaluation\LinkEvaluator;
 use App\Repository\CalibrationRepository;
 use App\Repository\DeviceTypeRepository;
 use App\Repository\LocationRepository;
 use App\Repository\MeasurementRepository;
+use App\Repository\EvaluationRepository;
+use App\Repository\UserRepository;
 
 require __DIR__ . '/vendor/autoload.php';
 
@@ -18,25 +23,44 @@ session_set_cookie_params([
     'secure' => !empty($_SERVER['HTTPS']),
     'samesite' => 'Lax',
 ]);
+ini_set('session.use_strict_mode', '1');
 session_start();
 
 $config = Config::fromEnvironment(__DIR__);
+set_exception_handler(static function (Throwable $exception) use ($config): void {
+    error_log((string) $exception);
+    http_response_code(500);
+    $detail = $config->get('APP_DEBUG', 'false') === 'true' ? '<pre>' . htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8') . '</pre>' : '';
+    echo '<!doctype html><html lang="de"><meta charset="utf-8"><title>Fehler</title><body><h1>Anwendung nicht verfügbar</h1><p>Konfiguration und Serverprotokoll prüfen.</p>' . $detail . '</body></html>';
+});
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: DENY');
+header('Referrer-Policy: same-origin');
+Auth::enforce($config);
 $database = Database::connect($config);
 $devices = new DeviceTypeRepository($database);
 $locations = new LocationRepository($database);
 $measurements = new MeasurementRepository($database);
 $calibrations = new CalibrationRepository($database);
 $calibrationService = new CalibrationService($calibrations);
+$evaluationRepository = new EvaluationRepository($database);
+$evaluationService = new EvaluationService($evaluationRepository, new LinkEvaluator());
+$userRepository = new UserRepository($database);
 $page = $_GET['page'] ?? 'dashboard';
-$allowedPages = ['dashboard', 'devices', 'locations', 'measurements', 'calibrations'];
+$allowedPages = ['dashboard', 'devices', 'locations', 'measurements', 'calibrations', 'evaluations', 'users'];
 $page = in_array($page, $allowedPages, true) ? $page : 'dashboard';
+if ($page === 'users' && ($_SESSION['user']['role'] ?? '') !== 'admin') {
+    $page = 'dashboard';
+}
 $message = $_SESSION['flash'] ?? null;
 unset($_SESSION['flash']);
 $error = null;
+$evaluationReport = null;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         Csrf::verify($_POST['_token'] ?? null);
+        Auth::requireRole('editor');
         $action = $_POST['action'] ?? '';
 
         if ($action === 'create_device') {
@@ -51,6 +75,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif ($action === 'calculate_calibration') {
             $calibrationService->calculate((int) $_POST['device_type_id']);
             $page = 'calibrations';
+        } elseif ($action === 'evaluate_location') {
+            $evaluationReport = $evaluationService->evaluateAll((int) $_POST['field_measurement_id']);
+            $page = 'evaluations';
+        } elseif ($action === 'update_user_role') {
+            Auth::requireRole('admin');
+            $userRepository->updateRole((int) $_POST['user_id'], (string) $_POST['role'], (int) $_SESSION['user']['id']);
+            $page = 'users';
         } else {
             throw new RuntimeException('Unbekannte Aktion.');
         }
@@ -69,6 +100,12 @@ $deviceRows = $devices->all();
 $locationRows = $locations->all();
 $measurementRows = $measurements->latest();
 $calibrationRows = $calibrations->latestForAllDevices();
+$fieldMeasurementRows = $evaluationRepository->fieldMeasurements();
+$userRows = ($_SESSION['user']['role'] ?? '') === 'admin' ? $userRepository->all() : [];
+$navPages = ['dashboard' => 'Übersicht', 'devices' => 'Gerätetypen', 'locations' => 'Messorte', 'measurements' => 'Messungen', 'calibrations' => 'Kalibrierung', 'evaluations' => 'Bewertung'];
+if (($_SESSION['user']['role'] ?? '') === 'admin') {
+    $navPages['users'] = 'Benutzer';
+}
 $h = static fn (mixed $value): string => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
 ?>
 <!doctype html>
@@ -81,9 +118,9 @@ $h = static fn (mixed $value): string => htmlspecialchars((string) $value, ENT_Q
 </head>
 <body>
 <header>
-    <h1>LoRaWAN Device Evaluator</h1>
+    <div class="header-row"><h1>LoRaWAN Device Evaluator</h1><div><?= $h($_SESSION['user']['display_name'] ?? '') ?> · <?= $h($_SESSION['user']['role'] ?? '') ?> <a href="auth.php?action=logout">Abmelden</a></div></div>
     <nav>
-        <?php foreach (['dashboard' => 'Übersicht', 'devices' => 'Gerätetypen', 'locations' => 'Messorte', 'measurements' => 'Messungen', 'calibrations' => 'Kalibrierung'] as $key => $label): ?>
+        <?php foreach ($navPages as $key => $label): ?>
             <a class="<?= $page === $key ? 'active' : '' ?>" href="?page=<?= $key ?>"><?= $label ?></a>
         <?php endforeach ?>
     </nav>
@@ -182,6 +219,39 @@ $h = static fn (mixed $value): string => htmlspecialchars((string) $value, ENT_Q
                 <?php endforeach ?>
                 </tbody>
             </table>
+        </section>
+    <?php elseif ($page === 'evaluations'): ?>
+        <section class="panel">
+            <h2>Standort bewerten</h2>
+            <p>Eine Fieldtester-Messung wird mit allen aktuell kalibrierten Gerätetypen verglichen.</p>
+            <form method="post">
+                <input type="hidden" name="_token" value="<?= Csrf::token() ?>">
+                <input type="hidden" name="action" value="evaluate_location">
+                <div class="grid"><label>Fieldtester-Messung<select required name="field_measurement_id">
+                    <option value="">Bitte wählen</option>
+                    <?php foreach ($fieldMeasurementRows as $row): ?><option value="<?= $h($row['id']) ?>"><?= $h($row['measured_at'] . ' – ' . $row['location_name'] . ' – RSSI ' . $row['rssi_dbm'] . ' / SNR ' . $row['snr_db'] . ' / SF' . $row['spreading_factor']) ?></option><?php endforeach ?>
+                </select></label></div>
+                <div class="actions"><button>Alle Gerätetypen vergleichen</button></div>
+            </form>
+        </section>
+        <?php if ($evaluationReport): ?>
+            <section class="panel">
+                <h2>Ergebnis: <?= $h($evaluationReport['measurement']['location_name']) ?></h2>
+                <p>Ausgangsmessung: RSSI <?= $h($evaluationReport['measurement']['rssi_dbm']) ?> dBm, SNR <?= $h($evaluationReport['measurement']['snr_db']) ?> dB, SF<?= $h($evaluationReport['measurement']['spreading_factor']) ?>, TX <?= $h($evaluationReport['measurement']['tx_power_dbm']) ?> dBm.</p>
+                <table><thead><tr><th>Gerätetyp</th><th>Prognose RSSI</th><th>Prognose SNR</th><th>Reserve</th><th>Unsicherheit</th><th>Bewertung</th></tr></thead>
+                <tbody><?php foreach ($evaluationReport['results'] as $row): ?><tr>
+                    <td><?= $h($row['manufacturer'] . ' ' . $row['model']) ?></td><td><?= $h($row['estimated_rssi']) ?> dBm</td><td><?= $h($row['estimated_snr']) ?> dB</td><td><?= $h($row['margin_db']) ?> dB</td><td><?= $h($row['uncertainty_db']) ?> dB</td><td><span class="verdict <?= $h($row['verdict']) ?>"><?= $h($row['verdict']) ?></span><br><small><?= $h($row['explanation']) ?></small></td>
+                </tr><?php endforeach ?></tbody></table>
+            </section>
+        <?php endif ?>
+    <?php elseif ($page === 'users'): ?>
+        <section class="panel"><h2>Benutzer und Rollen</h2>
+            <p><strong>Viewer</strong> dürfen lesen, <strong>Editor</strong> dürfen Daten erfassen und auswerten, <strong>Admin</strong> dürfen zusätzlich Rollen verwalten.</p>
+            <table><thead><tr><th>Name</th><th>E-Mail</th><th>Externe Identität</th><th>Rolle</th><th></th></tr></thead><tbody>
+            <?php foreach ($userRows as $row): ?><tr>
+                <td><?= $h($row['display_name']) ?></td><td><?= $h($row['email'] ?? '–') ?></td><td><?= $h($row['external_subject']) ?></td>
+                <td colspan="2"><form method="post" class="inline-form"><input type="hidden" name="_token" value="<?= Csrf::token() ?>"><input type="hidden" name="action" value="update_user_role"><input type="hidden" name="user_id" value="<?= $h($row['id']) ?>"><select name="role"><option value="viewer" <?= $row['role'] === 'viewer' ? 'selected' : '' ?>>Viewer</option><option value="editor" <?= $row['role'] === 'editor' ? 'selected' : '' ?>>Editor</option><option value="admin" <?= $row['role'] === 'admin' ? 'selected' : '' ?>>Admin</option></select><button>Ändern</button></form></td>
+            </tr><?php endforeach ?></tbody></table>
         </section>
     <?php endif ?>
 </main>
