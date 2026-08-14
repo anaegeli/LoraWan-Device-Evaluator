@@ -5,6 +5,8 @@ declare(strict_types=1);
 use App\Config;
 use App\Database;
 use App\Http\Csrf;
+use App\Calibration\CalibrationService;
+use App\Repository\CalibrationRepository;
 use App\Repository\DeviceTypeRepository;
 use App\Repository\LocationRepository;
 use App\Repository\MeasurementRepository;
@@ -23,8 +25,10 @@ $database = Database::connect($config);
 $devices = new DeviceTypeRepository($database);
 $locations = new LocationRepository($database);
 $measurements = new MeasurementRepository($database);
+$calibrations = new CalibrationRepository($database);
+$calibrationService = new CalibrationService($calibrations);
 $page = $_GET['page'] ?? 'dashboard';
-$allowedPages = ['dashboard', 'devices', 'locations', 'measurements'];
+$allowedPages = ['dashboard', 'devices', 'locations', 'measurements', 'calibrations'];
 $page = in_array($page, $allowedPages, true) ? $page : 'dashboard';
 $message = $_SESSION['flash'] ?? null;
 unset($_SESSION['flash']);
@@ -44,6 +48,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif ($action === 'create_measurement') {
             $measurements->create($_POST);
             $page = 'measurements';
+        } elseif ($action === 'calculate_calibration') {
+            $calibrationService->calculate((int) $_POST['device_type_id']);
+            $page = 'calibrations';
         } else {
             throw new RuntimeException('Unbekannte Aktion.');
         }
@@ -61,6 +68,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $deviceRows = $devices->all();
 $locationRows = $locations->all();
 $measurementRows = $measurements->latest();
+$calibrationRows = $calibrations->latestForAllDevices();
 $h = static fn (mixed $value): string => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
 ?>
 <!doctype html>
@@ -75,7 +83,7 @@ $h = static fn (mixed $value): string => htmlspecialchars((string) $value, ENT_Q
 <header>
     <h1>LoRaWAN Device Evaluator</h1>
     <nav>
-        <?php foreach (['dashboard' => 'Übersicht', 'devices' => 'Gerätetypen', 'locations' => 'Messorte', 'measurements' => 'Messungen'] as $key => $label): ?>
+        <?php foreach (['dashboard' => 'Übersicht', 'devices' => 'Gerätetypen', 'locations' => 'Messorte', 'measurements' => 'Messungen', 'calibrations' => 'Kalibrierung'] as $key => $label): ?>
             <a class="<?= $page === $key ? 'active' : '' ?>" href="?page=<?= $key ?>"><?= $label ?></a>
         <?php endforeach ?>
     </nav>
@@ -137,6 +145,44 @@ $h = static fn (mixed $value): string => htmlspecialchars((string) $value, ENT_Q
             </div><label>Notizen<textarea name="notes"></textarea></label><div class="actions"><button>Speichern</button></div>
         </form></section>
         <section class="panel"><h2>Letzte Messungen</h2><table><thead><tr><th>Zeit</th><th>Ort</th><th>Quelle</th><th>Gerät</th><th>RSSI</th><th>SNR</th><th>SF</th><th>Paar-ID</th></tr></thead><tbody><?php foreach ($measurementRows as $row): ?><tr><td><?= $h($row['measured_at']) ?></td><td><?= $h($row['location_name']) ?></td><td><?= $h($row['source']) ?></td><td><?= $h(trim(($row['manufacturer'] ?? '') . ' ' . ($row['model'] ?? '')) ?: '–') ?></td><td><?= $h($row['rssi_dbm']) ?></td><td><?= $h($row['snr_db']) ?></td><td><?= $h($row['spreading_factor']) ?></td><td><?= $h($row['pair_identifier'] ?? '–') ?></td></tr><?php endforeach ?></tbody></table></section>
+    <?php elseif ($page === 'calibrations'): ?>
+        <section class="panel">
+            <h2>Gerätetyp kalibrieren</h2>
+            <p>Verwendet vollständige Messpaare mit gleicher Paar-ID und korrigiert den RSSI-Unterschied um die jeweilige TX-Leistung.</p>
+            <form method="post">
+                <input type="hidden" name="_token" value="<?= Csrf::token() ?>">
+                <input type="hidden" name="action" value="calculate_calibration">
+                <div class="grid">
+                    <label>Gerätetyp
+                        <select required name="device_type_id">
+                            <option value="">Bitte wählen</option>
+                            <?php foreach ($deviceRows as $row): ?>
+                                <option value="<?= $h($row['id']) ?>"><?= $h($row['manufacturer'] . ' ' . $row['model']) ?></option>
+                            <?php endforeach ?>
+                        </select>
+                    </label>
+                </div>
+                <div class="actions"><button>Kalibrierung berechnen</button></div>
+            </form>
+        </section>
+        <section class="panel">
+            <h2>Aktuelle Kalibrierungen</h2>
+            <table>
+                <thead><tr><th>Gerätetyp</th><th>Messpaare</th><th>RSSI-Korrektur</th><th>SNR-Differenz</th><th>Streuung RSSI</th><th>Stand</th></tr></thead>
+                <tbody>
+                <?php foreach ($calibrationRows as $row): ?>
+                    <tr>
+                        <td><?= $h($row['manufacturer'] . ' ' . $row['model']) ?></td>
+                        <td><?= $h($row['sample_count']) ?> / mindestens <?= $h($row['minimum_calibration_pairs']) ?></td>
+                        <td><?= $h($row['median_rssi_delta_db']) ?> dB</td>
+                        <td><?= $h($row['median_snr_delta_db']) ?> dB</td>
+                        <td><?= $h($row['rssi_spread_db']) ?> dB</td>
+                        <td><?= $h($row['calculated_at']) ?></td>
+                    </tr>
+                <?php endforeach ?>
+                </tbody>
+            </table>
+        </section>
     <?php endif ?>
 </main>
 </body>
