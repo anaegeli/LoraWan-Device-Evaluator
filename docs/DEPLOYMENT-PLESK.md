@@ -1,30 +1,40 @@
 # Deployment on Metanet/Plesk
 
+## Hosting model
+
+The complete deployable application is contained in the repository's `public/` folder. No file or directory above the webroot is required.
+
+Upload the **contents** of `public/` into the domain's document root:
+
+- `index.php`
+- `.htaccess`
+- `.env`
+- `composer.json`
+- `assets/`
+- `app/`
+- `setup/`
+- `vendor/` after Composer installation
+
+The top-level `.htaccess` denies direct HTTP access to `.env`, Composer files, `app/`, `setup/`, `var/` and `vendor/`.
+
 ## Requirements
 
 - PHP 8.2
-- Apache with `mod_rewrite`
+- Apache with `mod_rewrite` and allowed `.htaccess` overrides
 - PDO MySQL extension
 - MySQL 5.6 or newer
 - HTTPS
 
-The application deliberately has no runtime framework and no Node.js requirement.
-
-## Recommended document root
-
-Point the domain's document root to the repository's `public/` directory. This prevents direct web access to configuration, source code and SQL files.
-
-If Plesk does not allow a custom document root, the root `.htaccess` forwards requests to `public/` and blocks sensitive directories. A dedicated document root is still preferred.
+There is no PHP framework, Node.js runtime or frontend build process.
 
 ## Installation
 
-1. Upload or check out the release.
-2. Run `composer install --no-dev --classmap-authoritative`.
+1. Upload the contents of the repository's `public/` folder to the Plesk document root.
+2. In Plesk Composer, use the `composer.json` located in that document root and run install, or run `composer install --no-dev --classmap-authoritative`.
 3. Copy `.env.example` to `.env` and enter the production values.
-4. Keep `.env` outside public access and restrict its filesystem permissions.
-5. Create the database and import `database/schema.sql`.
-6. Configure HTTPS and redirect HTTP to HTTPS.
-7. Confirm that `/.env`, `/src/`, `/database/` and `/vendor/` return HTTP 403 or 404.
+4. Import `setup/schema.sql` through phpMyAdmin, then leave the file protected by `.htaccess`.
+5. Enforce HTTPS.
+6. Verify that `/.env`, `/composer.json`, `/app/`, `/setup/` and `/vendor/` return HTTP 403 or 404.
 
 ## PHP production settings
 
